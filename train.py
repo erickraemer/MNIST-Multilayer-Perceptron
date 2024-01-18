@@ -3,11 +3,14 @@ from typing import List, Tuple, Callable
 
 import numpy as np
 import torch as pt
+from PIL import Image
 from matplotlib import pyplot as plt
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import datasets
-from torchvision.transforms import transforms
+from torchvision.transforms.functional import pil_to_tensor
+
+from one_hot_encoder import OneHotEncoder
 
 DEV = pt.device("cuda:0" if pt.cuda.is_available() else "cpu")
 DTYPE = pt.float32
@@ -23,7 +26,7 @@ def create_network(sizes: list[int]) -> Tuple[List[Tensor], List[Tensor]]:
     weights = []
     biases = []
     for i in range(len(sizes) - 1):
-        weights.append(pt.normal(mean=0., std=0.02, size=(sizes[i], sizes[i + 1]), device=DEV))
+        weights.append(pt.normal(mean=0., std=0.2, size=(sizes[i], sizes[i + 1]), device=DEV))
         biases.append(pt.zeros(sizes[i + 1], device=DEV))
     return weights, biases
 
@@ -65,7 +68,7 @@ def softmax_grad(y: Tensor):
     return grad
 
 
-def sigmoid_grad(sig: pt.Tensor) -> pt.Tensor:
+def sigmoid_grad(sig: Tensor) -> Tensor:
     """
     Calculates the sigmoid gradient.
     :param sig: a tensor of a sigmoid values
@@ -75,7 +78,7 @@ def sigmoid_grad(sig: pt.Tensor) -> pt.Tensor:
 
 
 def forward(batch: Tensor, weights: List[Tensor], biases: List[Tensor],
-            activations: List[Callable[[pt.Tensor], pt.Tensor]]) -> List[Tensor]:
+            activations: List[Callable[[Tensor], Tensor]]) -> List[Tensor]:
     """
     Will perform the forward propagation on the given mini-batch.
     :param activations: a list of activation function for each layer
@@ -84,6 +87,7 @@ def forward(batch: Tensor, weights: List[Tensor], biases: List[Tensor],
     :param biases: a list of biases
     :return: a list of tensors containing the outputs of each layer for each batch
     """
+
     result = [batch]
     for i in range(len(weights)):
         z = result[i] @ weights[i] + biases[i]
@@ -103,8 +107,8 @@ def backward(y_hat: List[Tensor], y: Tensor, weights: List[Tensor],
     :param biases: biases of the network
     :return: the mean of the weight gradients and bias gradients
     """
-    w_grad_means: List[pt.Tensor] = [pt.empty_like(w, device=DEV) for w in weights]
-    b_grad_means: List[pt.Tensor] = [pt.empty_like(b, device=DEV) for b in biases]
+    w_grad_means: List[Tensor] = [pt.empty_like(w, device=DEV) for w in weights]
+    b_grad_means: List[Tensor] = [pt.empty_like(b, device=DEV) for b in biases]
 
     # gradient of the mse times the gradient of the softmax
     sm = softmax_grad(y_hat[-1])
@@ -116,9 +120,9 @@ def backward(y_hat: List[Tensor], y: Tensor, weights: List[Tensor],
     # inner neurons
     for i in range(len(weights) - 2, -1, -1):
         # weight times previous delta
-        d0: pt.Tensor = delta @ weights[i + 1].T
+        d0: Tensor = delta @ weights[i + 1].T
         # sigmoid derivative
-        d1: pt.Tensor = sigmoid_grad(y_hat[i + 1])
+        d1: Tensor = sigmoid_grad(y_hat[i + 1])
         delta = d0 * d1
 
         # delta times the output of the neurons from the previous layer
@@ -126,6 +130,62 @@ def backward(y_hat: List[Tensor], y: Tensor, weights: List[Tensor],
         w_grad_means[i][:] = pt.mean(pt.einsum("bi,bj->bij", y_hat[i], delta), dim=0)
 
     return w_grad_means, b_grad_means
+
+
+def propagate(x: Tensor, y: Tensor, weights: List[Tensor], biases: List[Tensor],
+              activations: List[Callable[[Tensor], Tensor]]):
+    # forward propagation
+    y_hat = forward(x, weights, biases, activations)
+
+    # calculate batch loss
+    loss = mse_loss(y_hat[-1], y).cpu()
+
+    return y_hat, loss
+
+
+def prepare_dataloader(dataset_path: str, batch_size: int, classes: int, num_workers: int = 2):
+    target_transform = OneHotEncoder(classes)
+    t_set = datasets.MNIST(dataset_path,
+                           train=True, download=True,
+                           transform=transform_image,
+                           target_transform=target_transform
+                           )
+
+    v_set = datasets.MNIST(dataset_path,
+                           train=False,
+                           download=True,
+                           transform=transform_image,
+                           target_transform=target_transform
+                           )
+
+    t_loader = DataLoader(dataset=t_set,
+                          batch_size=batch_size,
+                          shuffle=True,
+                          num_workers=num_workers,
+                          pin_memory=True)
+
+    v_loader = DataLoader(dataset=v_set,
+                          batch_size=batch_size * 4,
+                          shuffle=True,
+                          num_workers=num_workers,
+                          pin_memory=True)
+
+    return t_loader, v_loader
+
+
+def plot_loss(train_loss: Tensor, validation_loss: Tensor, epoch: int) -> None:
+    ar = pt.arange(epoch + 1)
+    plt.plot(ar, train_loss[:epoch + 1], "r")
+    plt.plot(ar, validation_loss[:epoch + 1], "b")
+    plt.legend(["train loss", "validation loss"], loc="upper right")
+    plt.pause(0.01)
+
+
+def transform_image(x: Image) -> Tensor:
+    x = pil_to_tensor(x).type(pt.float32)
+    x /= 255.
+    x = x.reshape(-1)
+    return x
 
 
 def train():
@@ -138,60 +198,43 @@ def train():
 
     # set hyperparameters
     batch_size = 128
-    max_epochs = 50
+    max_epochs = 200
     alpha = 0.2  # learning rate
     beta = 0.5  # adam scaler
     classes = 10
     round_to = 4
 
-    dataset_path = "data/"
-    t_set = datasets.MNIST(dataset_path, train=True, download=True, transform=transforms.ToTensor())
-    v_set = datasets.MNIST(dataset_path, train=False, download=True, transform=transforms.ToTensor())
+    # prepare image loader
+    t_loader, v_loader = prepare_dataloader("data", batch_size, classes)
 
-    t_loader = DataLoader(dataset=t_set,
-                          batch_size=batch_size,
-                          shuffle=True,
-                          num_workers=2,
-                          pin_memory=True)
-
-    v_loader = DataLoader(dataset=v_set,
-                          batch_size=batch_size * 4,
-                          shuffle=True,
-                          num_workers=2,
-                          pin_memory=True)
-
-    one_hot_enc = pt.zeros((classes ** 2,)).reshape((classes, classes))
-    one_hot_enc.fill_diagonal_(1.)
-    one_hot_enc.to(DEV)
-
+    # create tensor to store the loss
     val_loss = pt.zeros(max_epochs)
     train_loss = pt.zeros(max_epochs)
 
+    # create lists to back up weights and biases when a new minima is found
     weight_backup = []
     bias_backup = []
 
+    # main trainings loop
     for epoch in range(max_epochs):
 
         # learning rate velocity for adam
         w_vel = [pt.zeros_like(w) for w in weights]
         b_vel = [pt.zeros_like(b) for b in biases]
 
-        x: pt.Tensor  # type hint
-        y: pt.Tensor  # type hint
+        # train network on the trainings set
+        x: Tensor  # type hint
+        y: Tensor  # type hint
         for batch, (x, y) in enumerate(t_loader):
 
+            # send tensors to gpu if available
             x = x.to(DEV, non_blocking=True)
-            x = x.reshape(x.shape[0], -1)
-            y = pt.stack([one_hot_enc[i] for i in y])
             y = y.to(DEV, non_blocking=True)
 
-            # forward propagation
-            y_hat = forward(x, weights, biases, activations)
+            # calculate forward propagation and loss
+            y_hat, loss = propagate(x, y, weights, biases, activations)
 
-            # calculate batch loss
-            # loss = pt.nn.functional.mse_loss(y_hat[-1], y)
-            loss = mse_loss(y_hat[-1], y).cpu()
-
+            # save loss for plotting
             train_loss[epoch] += loss
 
             # backward propagation
@@ -209,41 +252,41 @@ def train():
 
             print(f"Epoch: {epoch} | Batch {batch + 1}/{len(t_loader)} loss: ~{round(loss.item(), round_to)}")
 
-        print("")
+        # calculate mean of the trainings loss
         train_loss[epoch] /= len(t_loader)
 
+        # calculate loss on the validation set
         for batch, (x, y) in enumerate(v_loader):
+
+            # send tensors to gpu if available
             x = x.to(DEV, non_blocking=True)
-            x = x.reshape(x.shape[0], -1)
-            y = pt.stack([one_hot_enc[i] for i in y])
             y = y.to(DEV, non_blocking=True)
 
-            # forward propagation
-            y_hat = forward(x, weights, biases, activations)
+            y_hat, loss = propagate(x, y, weights, biases, activations)
 
-            # calculate batch loss
-            # loss = pt.nn.functional.mse_loss(y_hat[-1], y)
-            loss = mse_loss(y_hat[-1], y).cpu()
             val_loss[epoch] += loss
 
             print(f"Epoch: {epoch} | Validation Batch {batch + 1}/{len(t_loader)}")
 
+        # calculate mean of the validation loss
         val_loss[epoch] /= len(v_loader)
         print(f"\nValidation loss: ~{round(val_loss[epoch].item(), round_to)}")
 
-        if epoch > 0 and val_loss[epoch] < pt.min(val_loss[:epoch]):
-            weight_backup = [w.cpu().numpy() for w in weights]
-            bias_backup = [b.cpu().numpy() for b in biases]
+        # plot loss
+        plot_loss(train_loss, val_loss, epoch)
 
-        # draw plot
-        ar = pt.arange(epoch + 1)
-        plt.plot(ar, train_loss[:epoch+1], "r")
-        plt.plot(ar, val_loss[:epoch+1], "b")
-        plt.legend(["train loss", "validation loss"], loc="upper right")
-        plt.pause(0.01)
+        # backup weights and biases
+        weight_backup = [w.cpu().numpy() for w in weights]
+        bias_backup = [b.cpu().numpy() for b in biases]
 
+        # stop training if validation loss is increasing again
+        if epoch > 0 and val_loss[epoch] > val_loss[epoch-1]:
+            break
+
+    # save weights and biases
     os.makedirs("models", exist_ok=True)
-    np.savez("models/model.npz", weights=np.array(weight_backup, dtype=object), biases=np.array(bias_backup, dtype=object))
+    np.savez("models/model.npz", weights=np.array(weight_backup, dtype=object),
+             biases=np.array(bias_backup, dtype=object))
 
 
 if __name__ == "__main__":
