@@ -1,21 +1,17 @@
 import torch as pt
-import numpy as np
 from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision import datasets
-from torchvision.transforms import transforms
 
-from train import sigmoid, softmax, forward
+from model import Model
+from train import sigmoid, softmax, forward, transform_image
 
 
 def main():
-    pt.set_printoptions(precision=10)
-    model = np.load("models/model.npz", allow_pickle=True)
-    weights = [pt.from_numpy(w) for w in model["weights"]]
-    biases = [pt.from_numpy(b) for b in model["biases"]]
-    activations = [sigmoid, sigmoid, softmax]
+    model = Model(activations=[sigmoid, sigmoid, softmax])
+    model.load("models/model.pt")
 
-    mnist = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
+    mnist = datasets.MNIST("data", train=False, download=True, transform=transform_image)
 
     amount = 10
     start = pt.randint(len(mnist) - amount, (1,))
@@ -24,11 +20,10 @@ def main():
     dl = DataLoader(dataset=mnist, batch_size=amount)
     images = [img for img, _ in dl][0]
 
-    x = images.squeeze()
-    x = x.reshape(x.shape[0], -1)
-
-    pred = forward(x, weights, biases, activations)[-1].cpu()
+    pred = forward(images, model)[-1].cpu()
     pred_idx = pt.argmax(pred, dim=1)
+
+    images = images.reshape((amount, 1, 28, 28))
 
     columns = 5
     rows = amount // columns

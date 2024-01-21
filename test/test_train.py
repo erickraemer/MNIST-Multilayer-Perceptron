@@ -1,4 +1,6 @@
 import pytest
+
+from model import Model
 from train import softmax, sigmoid, softmax_grad, sigmoid_grad, forward, mse_loss, mse_grad
 import torch as pt
 
@@ -109,7 +111,12 @@ def test_forward():
     weights = [w, w]
     biases = [b, b]
 
-    out = forward(x, weights, biases, [sigmoid, softmax])
+    model = Model(
+        activations=[sigmoid, softmax],
+        weights=weights,
+        biases=biases)
+
+    out = forward(x, model)
 
     # Logits, hidden layer:
     # lh = pt.tensor([[0.7500000000, 1.2999999523],
