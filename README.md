@@ -12,6 +12,11 @@ The mean square error is used to calculate the loss.
 
 (784, Input) => (32, Sigmoid) => (16, Sigmoid) => (10, Softmax) => Mean Square Error
 
+## Instructions
+To train the network execute the function train() in train.py. After the training
+the model will be saved to models/model.pt. The model can then be evaluated by running
+the code inside model_evaluation.ipynb.
+
 ## Training Results
 ![plot](img/loss.png)
 
